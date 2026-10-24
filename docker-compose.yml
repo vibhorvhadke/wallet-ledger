@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: wallet-postgres
+    environment:
+      POSTGRES_DB: wallet
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+    ports:
+      - "5433:5432"
+    volumes:
+      - wallet-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  wallet-pgdata:
