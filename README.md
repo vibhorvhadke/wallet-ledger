@@ -31,3 +31,23 @@
 - **Size.** A `BIGINT` key is 8 bytes; long strings make every index and foreign key larger.
 
 So each table uses a system-generated `BIGINT` key, and email and phone get `UNIQUE` constraints instead.
+
+## Milestone 2 — Concurrency
+
+### Step 2: Breaking it first (no locks)
+
+`UnsafeTransferService` reads balances without locks, checks funds in Java, then writes values computed in Java.
+`UnsafeTransferLabTest` tops up a wallet with ₹500 and fires 100 concurrent ₹10 transfers.
+
+| Result | Got | Correct |
+|---|---|---|
+| Transfers succeeded | 100 | 50 |
+| Transfers rejected | 0 | 50 |
+| Sender stored balance (paise) | 32000 | 0 |
+| Sender ledger balance (paise) | -50000 | 0 |
+| Receiver stored balance (paise) | 19000 | 50000 |
+| Receiver ledger balance (paise) | 100000 | 50000 |
+
+**Overdraft:** all 100 transfers passed the funds check because they read the balance before others had written; the ledger shows the sender at -₹500.
+**Lost updates:** concurrent writes overwrote each other, so stored balances no longer match the ledger.
+**The `CHECK (balance >= 0)` did not catch it:** each thread wrote a positive value computed from a stale read, so the stored column never went negative.
