@@ -34,6 +34,10 @@ So each table uses a system-generated `BIGINT` key, and email and phone get `UNI
 
 ## Milestone 2 — Concurrency
 
+### Step 1: Isolation levels
+
+The two-session lab (Read Committed, Repeatable Read, Serializable, Repeatable Read with a join) is in [docs/isolation.md](docs/isolation.md).
+
 ### Step 2: Breaking it first (no locks)
 
 `UnsafeTransferService` reads balances without locks, checks funds in Java, then writes values computed in Java.
@@ -108,3 +112,33 @@ Every POST requires an `Idempotency-Key` header (UUID). Missing → 400 `MISSING
 | Same key 10 times in parallel | 1 transfer, 10 identical responses ✅ |
 | Same key, different amount | 201 then 422, no extra money moved ✅ |
 | Missing key | 400, no money moved ✅ |
+
+## Milestone 4 — Check the books every night
+
+`ReconciliationService.run()` runs 5 checks as SQL queries:
+
+| Check | What it finds |
+|---|---|
+| Everything balances | Sum of all debits ≠ sum of all credits |
+| Every transfer balances | Transfers whose debits ≠ credits (`GROUP BY … HAVING`) |
+| Stored balances are right | `accounts.balance` ≠ balance computed from ledger entries |
+| No overdrafts | User wallets with a computed balance below zero |
+| Nothing is orphaned | Completed or reversed transfers with no entries (HELD and REJECTED move no money, so they're skipped); entries with no transfer |
+
+**Design:**
+- **One `REPEATABLE READ` transaction:** all checks see the same snapshot, so transfers made during the run can't make checks disagree.
+- **One run at a time:** the run starts with `SELECT … FOR UPDATE NOWAIT` on its `job_locks` row. If another run holds it, PostgreSQL fails immediately with SQLSTATE 55P03, returned as 409 `RECONCILIATION_ALREADY_RUNNING`.
+- **Report, never fix:** saves one `reconciliation_runs` row (start, end, status, counts) and one `reconciliation_issues` row per problem.
+- **Scheduled** nightly at 2 AM India time (`@Scheduled`), plus `POST /admin/reconciliation/run` and `GET /admin/reconciliation/runs/{id}`.
+
+**Root cause is reported once:** one corrupted entry would otherwise trigger three checks (global total, the transfer, and each account's balance). The global check is reported only if no unbalanced transfer explains it, and accounts belonging to an unbalanced transfer are reported through that transfer, not again in the balance checks. The transfer's accounts are read from `transfers.from_account_id` / `to_account_id` (migration V5), so this still works if an entry was deleted.
+
+**Acceptance test** (`ReconciliationAcceptanceTest`): seed 10,000 transfers, run the job (PASSED, 0 issues), then corrupt the data directly:
+
+| Corruption | Reported as |
+|---|---|
+| One credit's amount changed 100 → 150 | `TRANSFER_BALANCED` on that transfer |
+| One credit deleted | `TRANSFER_BALANCED` on that transfer |
+| One stored balance +777 | `STORED_BALANCE_MATCHES` on that account |
+
+Result: exactly these 3 issues, nothing else. ✅

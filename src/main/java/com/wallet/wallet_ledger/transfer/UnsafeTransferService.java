@@ -36,8 +36,8 @@ public class UnsafeTransferService {
 
         // 4. Record the transfer and its two ledger entries
         Long transferId = jdbc.queryForObject(
-                "INSERT INTO transfers (type, status, amount) VALUES ('PEER_TRANSFER', 'COMPLETED', ?) RETURNING id",
-                Long.class, amount);
+                "INSERT INTO transfers (type, status, amount, from_account_id, to_account_id) VALUES ('PEER_TRANSFER', 'COMPLETED', ?, ?, ?) RETURNING id",
+                Long.class, amount, fromAccountId, toAccountId);
         jdbc.update("INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) VALUES (?, ?, 'DEBIT', ?)",
                 transferId, fromAccountId, amount);
         jdbc.update("INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) VALUES (?, ?, 'CREDIT', ?)",

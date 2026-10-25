@@ -28,10 +28,13 @@ public class ReconciliationService {
                 HAVING COALESCE(SUM(amount) FILTER (WHERE direction = 'DEBIT'), 0)
                     <> COALESCE(SUM(amount) FILTER (WHERE direction = 'CREDIT'), 0)
             ),
-            affected_accounts AS (
-                SELECT DISTINCT account_id FROM ledger_entries
-                WHERE transfer_id IN (SELECT transfer_id FROM unbalanced_transfers)
-            )
+               affected_accounts AS (
+                   SELECT from_account_id AS account_id FROM transfers
+                   WHERE id IN (SELECT transfer_id FROM unbalanced_transfers)
+                   UNION
+                   SELECT to_account_id FROM transfers
+                   WHERE id IN (SELECT transfer_id FROM unbalanced_transfers)
+               )
             """;
 
     private final JdbcTemplate jdbc;

@@ -102,14 +102,14 @@ public class TransferService {
 
         // 3. Insert the transfer, its balanced ledger entries, and update stored balances
         TransferResponse transfer = jdbc.queryForObject("""
-                INSERT INTO transfers (type, status, amount, note, reversal_of_transfer_id)
-                VALUES (?, 'COMPLETED', ?, ?, ?)
+                INSERT INTO transfers (type, status, amount, note, reversal_of_transfer_id, from_account_id, to_account_id)
+                VALUES (?, 'COMPLETED', ?, ?, ?, ?, ?)
                 RETURNING id, created_at
                 """,
                 (rs, rowNum) -> new TransferResponse(
                         rs.getLong("id"), type.name(), "COMPLETED", amount, note,
                         fromAccountId, toAccountId, rs.getObject("created_at", OffsetDateTime.class)),
-                type.name(), amount, note, reversalOfTransferId);
+                type.name(), amount, note, reversalOfTransferId, fromAccountId, toAccountId);
 
         jdbc.update("INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) VALUES (?, ?, 'DEBIT', ?)",
                 transfer.id(), fromAccountId, amount);

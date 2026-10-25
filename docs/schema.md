@@ -167,12 +167,15 @@
 | 7 | idempotency_keys – transfers | One key creates 0..1 transfer (e.g. "create user" creates none) | One transfer comes from 0..1 key | 1:1 (optional) | `idempotency_keys.transfer_id` |
 | 8 | transfers – risk_rules | One transfer can trigger 0..many rules | One rule can fire on 0..many transfers | M:N | Mapping table `risk_flags` (`transfer_id`, `risk_rule_id`) |
 | 9 | reconciliation_runs – reconciliation_issues | One run finds 0..many issues | One issue belongs to exactly 1 run | 1:M | `reconciliation_issues.reconciliation_run_id` |
+| 10 | accounts – transfers (sender) | One account sends 0..many transfers | One transfer has exactly 1 sending account | 1:M | `transfers.from_account_id` |
+| 11 | accounts – transfers (receiver) | One account receives 0..many transfers | One transfer has exactly 1 receiving account | 1:M | `transfers.to_account_id` |
 
 ### Pairs with no direct link (and why)
 
-- **users – transfers:** A transfer is linked to users only through its ledger entries → accounts → users. A direct link would duplicate that and could go out of sync.
+- **users – transfers:** A transfer reaches users only through its accounts (`transfers.from_account_id` / `to_account_id` → `accounts.user_id`). A direct `user_id` on transfers would duplicate that and could go out of sync.
 - **job_locks – reconciliation_runs:** The lock row is looked up by `job_name`; it doesn't need to point to a run.
 - **transfer_status_history.changed_by:** Stored as text, not a foreign key, because admins are not stored in a table.
+- **Added later (migration V5):** `transfers.from_account_id` and `to_account_id`. They let the reconciliation job trace a transfer's accounts even if its ledger entries are damaged, and support fraud rules, statement Q&A and held transfers (which have no entries yet). They are written once at insert and never changed.
 
 ### Foreign key columns added (all BIGINT)
 
@@ -188,6 +191,8 @@
 | risk_flags | transfer_id | transfers.id |
 | risk_flags | risk_rule_id | risk_rules.id |
 | reconciliation_issues | reconciliation_run_id | reconciliation_runs.id |
+| transfers | from_account_id | accounts.id |
+| transfers | to_account_id | accounts.id |
 
 ## 4. Constraints
 
@@ -199,6 +204,7 @@
 | A user wallet's balance never goes negative (system accounts may) | `CHECK (account_type = 'SYSTEM' OR balance >= 0)` on `accounts` |
 | Ledger entries are insert-only | A trigger that raises an error on any UPDATE, DELETE or TRUNCATE of `ledger_entries` |
 | Idempotency key is unique per user | `UNIQUE NULLS NOT DISTINCT (user_id, idempotency_key)` on `idempotency_keys`; requests with no user (`POST /users`, admin) share one NULL group |
+
 **Why positive amounts + direction (not signed amounts):** A single `CHECK (amount > 0)` blocks zero and wrong-sign values, and "sum of debits = sum of credits" reads exactly like the accounting rule. With signed amounts, a sign mistake would silently flip the money's direction.
 
 ### 4.2 Additional constraints
@@ -220,10 +226,11 @@
 | risk_flags | `UNIQUE (transfer_id, risk_rule_id)` | One flag per rule per transfer |
 | risk_rules | `UNIQUE (code)` | One row per rule |
 | job_locks | `UNIQUE (job_name)` | One lock row per job |
+| transfers | `CHECK (from_account_id <> to_account_id)` | A transfer cannot move money to the same account |
 
-**Optional (nullable) columns:** `accounts.user_id`, `transfers.note`, `transfers.reversal_of_transfer_id`, `transfer_status_history.from_status`, `idempotency_keys.response_code`, `idempotency_keys.response_body`, `idempotency_keys.transfer_id`, the rule-specific threshold columns in `risk_rules`, `risk_flags.llm_explanation`, `risk_flags.llm_label`, `risk_flags.explained_at`, `reconciliation_runs.ended_at`, `job_locks.last_run_at`,`idempotency_keys.user_id`, `reconciliation_issues.entity_id`.
+**Optional (nullable) columns:** `accounts.user_id`, `transfers.note`, `transfers.reversal_of_transfer_id`, `transfer_status_history.from_status`, `idempotency_keys.response_code`, `idempotency_keys.response_body`, `idempotency_keys.transfer_id`, the rule-specific threshold columns in `risk_rules`, `risk_flags.llm_explanation`, `risk_flags.llm_label`, `risk_flags.explained_at`, `reconciliation_runs.ended_at`, `job_locks.last_run_at`, `idempotency_keys.user_id`, `reconciliation_issues.entity_id`.
 
-### 4.3 Indexes (for real queries)		
+### 4.3 Indexes (for real queries)
 
 PostgreSQL does **not** create indexes on foreign key columns automatically, so these are added deliberately.
 
@@ -239,13 +246,12 @@ PostgreSQL does **not** create indexes on foreign key columns automatically, so 
 
 **Write cost:** Every insert into `ledger_entries` must also update its 2 indexes. That's why we index only for queries we actually run. Indexes for the fraud rules will be added in Milestone 5, after measuring them.
 
-
 ## 5. ER Diagram
 
 ```mermaid
 erDiagram
     users |o--o{ accounts : owns
-    users ||--o{ idempotency_keys : sends
+    users |o--o{ idempotency_keys : sends
     accounts ||--o{ ledger_entries : "is debited or credited by"
     transfers ||--|{ ledger_entries : "is made of"
     transfers |o--o| transfers : reverses
@@ -254,6 +260,8 @@ erDiagram
     transfers ||--o{ risk_flags : "is flagged by"
     risk_rules ||--o{ risk_flags : fires
     reconciliation_runs ||--o{ reconciliation_issues : finds
+    accounts ||--o{ transfers : sends
+    accounts ||--o{ transfers : receives
 
     users {
         bigint id PK
@@ -275,6 +283,8 @@ erDiagram
     transfers {
         bigint id PK
         bigint reversal_of_transfer_id FK "only for reversals"
+        bigint from_account_id FK
+        bigint to_account_id FK
         varchar type
         varchar status
         bigint amount "paise"

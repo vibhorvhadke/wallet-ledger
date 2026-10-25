@@ -48,7 +48,8 @@ class UnsafeTransferLabTest {
         // --- Top up Rs 500 (50000 paise) properly: transfer + 2 entries + balances ---
         long cashIn = jdbc.queryForObject("SELECT id FROM accounts WHERE name = 'CASH_IN'", Long.class);
         long topupId = jdbc.queryForObject(
-                "INSERT INTO transfers (type, status, amount) VALUES ('TOPUP', 'COMPLETED', 50000) RETURNING id", Long.class);
+                "INSERT INTO transfers (type, status, amount, from_account_id, to_account_id) VALUES ('TOPUP', 'COMPLETED', 50000, ?, ?) RETURNING id",
+                Long.class, cashIn, fromWallet);
         jdbc.update("INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) VALUES (?, ?, 'DEBIT', 50000)", topupId, cashIn);
         jdbc.update("INSERT INTO ledger_entries (transfer_id, account_id, direction, amount) VALUES (?, ?, 'CREDIT', 50000)", topupId, fromWallet);
         jdbc.update("UPDATE accounts SET balance = balance - 50000 WHERE id = ?", cashIn);
