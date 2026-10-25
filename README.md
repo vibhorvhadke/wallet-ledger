@@ -80,3 +80,31 @@ The transfer runs at **Read Committed** (the PostgreSQL default) with row locks.
 - **Why not Repeatable Read:** a transfer that waited for the lock would fail with a serialization error instead of simply continuing with the new balance, so the application would have to retry.
 - **Why not Serializable:** it would also be correct, but on a busy wallet most concurrent transfers would be aborted with SQLSTATE 40001 and need retry loops. That means wasted work, lower throughput, and extra latency under exactly the load we care about, plus overhead for tracking read dependencies. Row locks make transfers on the same wallet **wait in line** instead of failing and retrying.
 - **Trade-off:** a very busy wallet becomes a hot row, and transfers on it run one at a time. Transfers on different wallets still run in parallel.
+
+## Milestone 3 — Never charge twice
+
+Every POST requires an `Idempotency-Key` header (UUID). Missing → 400 `MISSING_HEADER`.
+
+**How it works** (`IdempotencyService`, one transaction):
+
+1. Hash the request body with SHA-256.
+2. Insert the key first: `INSERT … ON CONFLICT ON CONSTRAINT uq_idempotency_keys_user_key DO NOTHING RETURNING id`.
+3. If inserted → run the transfer, save the response code and body on the key row, commit. The key, the transfer and the saved response commit together or not at all.
+4. If the key already exists → same hash and completed: return the saved status and body exactly; same hash and in progress: 409; different hash: 422 `IDEMPOTENCY_KEY_REUSED`.
+
+**Concurrent duplicates:** if two requests with the same key arrive together, the second `INSERT` waits on the unique index until the first commits, then finds the completed row and replays it. The unique constraint guarantees only one transfer.
+
+**Scope:** keys are unique per user (the owner of the sending wallet). Requests with no user yet (`POST /users`, admin endpoints) share one NULL scope via `UNIQUE NULLS NOT DISTINCT`.
+
+**Failed requests:** if the transfer fails (e.g. insufficient funds), the whole transaction rolls back, including the key row. A retry runs again and gets the same error; no money moves either time.
+
+**Byte-identical replays:** the response is read back from the stored `JSONB` (`RETURNING response_body::text`), so the first response and every replay are identical.
+
+**Acceptance tests** (`IdempotencyAcceptanceTest`, through real HTTP):
+
+| Test | Result |
+|---|---|
+| Same request 5 times in a row | 1 transfer, 5 identical 201 responses ✅ |
+| Same key 10 times in parallel | 1 transfer, 10 identical responses ✅ |
+| Same key, different amount | 201 then 422, no extra money moved ✅ |
+| Missing key | 400, no money moved ✅ |
