@@ -1,5 +1,7 @@
 package com.wallet.wallet_ledger.account;
-
+import com.wallet.wallet_ledger.common.ApiException;
+import org.springframework.http.HttpStatus;
+import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -25,5 +27,21 @@ public class AccountService {
                         rs.getString("currency"), rs.getLong("balance"),
                         rs.getObject("created_at", OffsetDateTime.class)),
                 userId, request.name());
+    }
+
+    /** Returns the owner's user id, or 404 if the id is not a user wallet (system accounts are not exposed). */
+    public long requireUserWalletOwner(long walletId) {
+        List<Long> owners = jdbc.query(
+                "SELECT user_id FROM accounts WHERE id = ? AND account_type = 'USER_WALLET'",
+                (rs, rowNum) -> rs.getLong("user_id"), walletId);
+        if (owners.isEmpty()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "WALLET_NOT_FOUND", "Wallet " + walletId + " not found");
+        }
+        return owners.get(0);
+    }
+
+    public long systemAccountId(String name) {
+        return jdbc.queryForObject(
+                "SELECT id FROM accounts WHERE account_type = 'SYSTEM' AND name = ?", Long.class, name);
     }
 }

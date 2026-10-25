@@ -39,7 +39,7 @@ class TransferStampedeTest {
         long fromWallet = createWallet();
         long toWallet = createWallet();
         long cashIn = jdbc.queryForObject("SELECT id FROM accounts WHERE name = 'CASH_IN'", Long.class);
-        transferService.transfer(TransferType.TOPUP, cashIn, fromWallet, 50000);
+        transferService.transfer(TransferType.TOPUP, cashIn, fromWallet, 50000, null);
 
         // --- 100 concurrent Rs 10 transfers ---
         int requests = 100;
@@ -54,7 +54,7 @@ class TransferStampedeTest {
             pool.submit(() -> {
                 startGate.await();
                 try {
-                    transferService.transfer(TransferType.PEER_TRANSFER, fromWallet, toWallet, 1000);
+                    transferService.transfer(TransferType.PEER_TRANSFER, fromWallet, toWallet, 1000, null);
                     succeeded.incrementAndGet();
                 } catch (InsufficientFundsException e) {
                     rejected.incrementAndGet();
@@ -107,4 +107,5 @@ class TransferStampedeTest {
                 FROM ledger_entries WHERE account_id = ?
                 """, Long.class, accountId);
     }
+
 }
