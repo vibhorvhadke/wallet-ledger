@@ -2,6 +2,8 @@
 
 ![CI](https://github.com/vibhorvhadke/wallet-ledger/actions/workflows/ci.yml/badge.svg)
 
+**Demo video:** [Watch the 5-minute demo](https://drive.google.com/file/d/1l0GnxwlTH9j_f23qPD-aRobR1x5W9Yy_/view?usp=drive_link)
+
 ## Overview
 
 The backend of a digital wallet, like the system behind a UPI app. Users open wallets, top up, send money and withdraw. Every rupee is recorded twice (double-entry), balances stay correct under heavy concurrency, retries never charge twice, a nightly job proves the books balance, fraud rules hold risky transfers, and users can ask plain-English questions about their statement.
