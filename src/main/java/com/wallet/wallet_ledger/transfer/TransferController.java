@@ -72,4 +72,16 @@ public class TransferController {
     public TransferDetailsResponse getTransfer(@PathVariable long transferId) {
         return transferQueryService.getTransfer(transferId);
     }
+
+    @PostMapping("/transfers/{transferId}/reverse")
+    public ResponseEntity<String> reverse(@PathVariable long transferId,
+                                          @RequestHeader("Idempotency-Key") UUID idempotencyKey,
+                                          @Valid @RequestBody(required = false) ReverseRequest request) {
+        String reason = (request == null) ? null : request.reason();
+        ReversalCommand command = new ReversalCommand(transferId, reason);
+        // Admin-style operation: no user scope (NULL), like other admin endpoints
+        return idempotencyService.execute(null, idempotencyKey, command,
+                () -> created(transferService.reverse(transferId, reason, "ADMIN"))
+        ).toResponseEntity();
+    }
 }
