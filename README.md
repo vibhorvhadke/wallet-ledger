@@ -142,3 +142,24 @@ Every POST requires an `Idempotency-Key` header (UUID). Missing → 400 `MISSING
 | One stored balance +777 | `STORED_BALANCE_MATCHES` on that account |
 
 Result: exactly these 3 issues, nothing else. ✅
+
+### Performance (1,000,000 ledger entries)
+
+Seeded with `scripts/seed.sql -v transfers=500000` (500,000 transfers, 1,000,000 entries), then `EXPLAIN (ANALYZE, BUFFERS)` on each check:
+
+| Check | Plan | Time |
+|---|---|---|
+| 1. Everything balances | Parallel Seq Scan + aggregate | 57 ms |
+| 2. Every transfer balances | Index Scan on `idx_ledger_entries_transfer` + GroupAggregate | 542 ms |
+| 3. Stored balances right | Nested loop: accounts → `idx_ledger_entries_account_created` | 1,108 ms |
+| 4. No overdrafts | Same as 3, plus the unbalanced-transfers CTE | 1,243 ms |
+| 5a. Transfers with no entries | Parallel Hash Right Anti Join (seq scans) | 215 ms |
+| 5b. Entries with no transfer | Parallel Hash Anti Join (seq scans) | 230 ms |
+| **Total** | | **≈ 3.4 s** |
+
+**Which checks can afford a full scan?** All of them. Every check must examine every row (a total, a balance per transfer, a balance per account, or "has no partner"), so no index can avoid reading the whole ledger. For a nightly job, a few seconds is fine. **No index was added for reconciliation**: the planner reuses indexes that already exist for API queries (`(transfer_id)` for `GET /transfers/{id}`, `(account_id, created_at, id)` for statements) where they help it skip a sort, and uses parallel sequential scans with hash anti joins for the orphan checks, which is cheaper than 500,000 index lookups.
+
+**Observations:**
+- In Check 3, the `NOT IN (affected_accounts)` part was `never executed`: with clean data no account mismatches, so the root-cause exclusion costs nothing.
+- The planner over-estimates unbalanced transfers (estimated 489,762, actual 0) because it can't predict a `HAVING` result. That inflated cost triggers JIT compilation (165–265 ms of overhead).
+- **What I'd do next:** Checks 3 and 4 recompute the unbalanced transfers that Check 2 already found. Passing Check 2's result to them would avoid reading the ledger a second time (about 450 ms saved in Check 4). If the ledger grows to hundreds of millions of rows, checks could run incrementally (only entries since the last run, plus stored running totals).
