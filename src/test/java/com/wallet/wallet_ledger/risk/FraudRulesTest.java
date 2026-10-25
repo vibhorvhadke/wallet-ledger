@@ -10,7 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.List;
 import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -125,5 +125,55 @@ class FraudRulesTest {
         return jdbc.queryForObject(
                 "INSERT INTO accounts (user_id, account_type, name) VALUES (?, 'USER_WALLET', 'Main') RETURNING id",
                 Long.class, userId);
+    }
+
+    @Test
+    void releasingAHeldTransferMovesTheMoneyNow() {
+        long held = holdOne();
+
+        TransferResponse released = transferService.decideHeld(held, "RELEASE", "ADMIN");
+
+        assertThat(released.status()).isEqualTo("COMPLETED");
+        assertThat(entryCount(held)).isEqualTo(2);
+        assertThat(balance(sender)).isEqualTo(10_000_000 - 6 * 1000);   // all 6 now moved
+        assertThat(statusChanges(held)).containsExactly("null->HELD", "HELD->COMPLETED");
+    }
+
+    @Test
+    void rejectingAHeldTransferNeverMovesMoney() {
+        long held = holdOne();
+
+        TransferResponse rejected = transferService.decideHeld(held, "REJECT", "ADMIN");
+
+        assertThat(rejected.status()).isEqualTo("REJECTED");
+        assertThat(entryCount(held)).isZero();
+        assertThat(balance(sender)).isEqualTo(10_000_000 - 5 * 1000);
+        assertThat(statusChanges(held)).containsExactly("null->HELD", "HELD->REJECTED");
+    }
+
+    @Test
+    void aTransferCanBeDecidedOnlyOnce() {
+        long held = holdOne();
+        transferService.decideHeld(held, "RELEASE", "ADMIN");
+
+        assertThatThrownBy(() -> transferService.decideHeld(held, "REJECT", "ADMIN"))
+                .hasMessageContaining("Only HELD transfers");
+    }
+
+    /** Sends 5 small transfers, then a 6th that velocity holds. Returns the held transfer's id. */
+    private long holdOne() {
+        for (int i = 0; i < 5; i++) {
+            send(receiverA, 1000);
+        }
+        TransferResponse sixth = send(receiverA, 1000);
+        assertThat(sixth.status()).isEqualTo("HELD");
+        return sixth.id();
+    }
+
+    private List<String> statusChanges(long transferId) {
+        return jdbc.queryForList("""
+                SELECT COALESCE(from_status, 'null') || '->' || to_status
+                FROM transfer_status_history WHERE transfer_id = ? ORDER BY id
+                """, String.class, transferId);
     }
 }

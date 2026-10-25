@@ -97,6 +97,58 @@ public class TransferService {
     }
 
     /**
+     * Admin decision on a HELD transfer. RELEASE moves the money now (funds re-checked);
+     * REJECT closes it with no money ever moving.
+     */
+    @Transactional
+    public TransferResponse decideHeld(long transferId, String decision, String changedBy) {
+        // 1. Lock the transfer row so two decisions on it cannot run at once
+        List<TransferResponse> found = jdbc.query("""
+                SELECT id, type, status, amount, note, from_account_id, to_account_id, created_at
+                FROM transfers WHERE id = ? FOR UPDATE
+                """,
+                (rs, rowNum) -> new TransferResponse(
+                        rs.getLong("id"), rs.getString("type"), rs.getString("status"), rs.getLong("amount"),
+                        rs.getString("note"), rs.getLong("from_account_id"), rs.getLong("to_account_id"),
+                        rs.getObject("created_at", OffsetDateTime.class)),
+                transferId);
+        if (found.isEmpty()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TRANSFER_NOT_FOUND", "Transfer " + transferId + " not found");
+        }
+        TransferResponse held = found.get(0);
+
+        // 2. Only HELD transfers can be decided
+        if (!"HELD".equals(held.status())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TRANSFER_NOT_HELD",
+                    "Only HELD transfers can be released or rejected; this one is " + held.status());
+        }
+
+        String newStatus;
+        if ("REJECT".equals(decision)) {
+            // 3a. Reject: no money ever moves
+            newStatus = "REJECTED";
+        } else {
+            // 3b. Release: lock accounts in ascending order, re-check funds, then move the money
+            LockedAccount first = lockAccount(Math.min(held.fromAccountId(), held.toAccountId()));
+            LockedAccount second = lockAccount(Math.max(held.fromAccountId(), held.toAccountId()));
+            LockedAccount from = (first.id() == held.fromAccountId()) ? first : second;
+            if (from.isUserWallet() && from.balance() < held.amount()) {
+                throw new InsufficientFundsException(held.fromAccountId());
+            }
+            writeEntriesAndBalances(held.id(), held.fromAccountId(), held.toAccountId(), held.amount());
+            newStatus = "COMPLETED";
+        }
+
+        // 4. Update status and audit log
+        jdbc.update("UPDATE transfers SET status = ? WHERE id = ?", newStatus, transferId);
+        jdbc.update("INSERT INTO transfer_status_history (transfer_id, from_status, to_status, changed_by) VALUES (?, 'HELD', ?, ?)",
+                transferId, newStatus, changedBy);
+
+        return new TransferResponse(held.id(), held.type(), newStatus, held.amount(), held.note(),
+                held.fromAccountId(), held.toAccountId(), held.createdAt());
+    }
+
+    /**
      * The one money path: lock both accounts, check funds, run fraud rules, write transfer (+ entries if not held).
      */
     private TransferResponse moveMoney(
