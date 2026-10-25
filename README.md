@@ -51,3 +51,32 @@ So each table uses a system-generated `BIGINT` key, and email and phone get `UNI
 **Overdraft:** all 100 transfers passed the funds check because they read the balance before others had written; the ledger shows the sender at -₹500.
 **Lost updates:** concurrent writes overwrote each other, so stored balances no longer match the ledger.
 **The `CHECK (balance >= 0)` did not catch it:** each thread wrote a positive value computed from a stale read, so the stored column never went negative.
+
+### Step 3: Fixing it with row locks
+
+`TransferService.transfer()` runs in one transaction:
+
+1. Lock both account rows with `SELECT … FOR UPDATE`, always in ascending `account_id` order, so two transfers between the same pair can never wait on each other in a cycle (deadlock).
+2. Re-read the balance while holding the lock, and reject with `InsufficientFundsException` if there isn't enough money (system accounts may go negative).
+3. Insert the transfer, its debit and credit entries, the first status-history row, and update stored balances with `balance = balance ± amount`.
+4. Commit when the method returns; any exception rolls everything back.
+
+**Stampede test** (`TransferStampedeTest`, `@RepeatedTest(20)`): ₹500 in one wallet, 100 concurrent ₹10 transfers.
+
+| Result | Unsafe (Step 2) | Row locks (Step 3) |
+|---|---|---|
+| Transfers succeeded | 100 | 50 |
+| Transfers rejected | 0 | 50 |
+| Sender stored balance (paise) | 32000 | 0 |
+| Sender ledger balance (paise) | -50000 | 0 |
+| Total debits = total credits | Yes, but balances wrong | Yes |
+| Runs passed | — | 20 / 20 |
+
+### Which isolation level, and why
+
+The transfer runs at **Read Committed** (the PostgreSQL default) with row locks.
+
+- **Why it is enough:** the only decision that matters (is there enough money?) is made on rows we have locked. When a transfer waits on `FOR UPDATE` and then gets the lock, PostgreSQL gives it the **latest committed** version of the row, so it always checks the real current balance. No other transaction can change those rows until we commit.
+- **Why not Repeatable Read:** a transfer that waited for the lock would fail with a serialization error instead of simply continuing with the new balance, so the application would have to retry.
+- **Why not Serializable:** it would also be correct, but on a busy wallet most concurrent transfers would be aborted with SQLSTATE 40001 and need retry loops. That means wasted work, lower throughput, and extra latency under exactly the load we care about, plus overhead for tracking read dependencies. Row locks make transfers on the same wallet **wait in line** instead of failing and retrying.
+- **Trade-off:** a very busy wallet becomes a hot row, and transfers on it run one at a time. Transfers on different wallets still run in parallel.
