@@ -181,3 +181,33 @@ Measured on a wallet with 150,457 entries (1.3 million entries in total):
 **Cursor pagination:** the client passes the `(created_at, id)` of the last row it saw. The row comparison matches the index order exactly, so PostgreSQL seeks straight to that position and reads only 20 rows. Cost is constant at any depth, and new rows don't shift pages.
 
 **API:** `GET /wallets/{id}/statement?limit=20` returns `next_cursor` when more rows exist. Pass it back as `?cursor=…` to get the next page; `next_cursor` is `null` on the last page. The cursor is the last row's `(created_at, id)`, Base64 URL-encoded so clients treat it as opaque. The original `offset` parameter still works, but `offset` and `cursor` cannot be combined (400). The service fetches `limit + 1` rows to know whether a next page exists. `StatementPaginationTest` walks a 45-entry wallet with both methods and checks they return the same rows in the same order, with no gaps or duplicates.
+
+## Milestone 5 — Fraud rules
+
+### Part A: Rules inside the transfer
+
+Thresholds live in `risk_rules`, not code. `RiskService` evaluates the active rules inside the transfer transaction, **after** the sender's row is locked (so the velocity count can't race) and **after** the funds check.
+
+| Rule | Fires when | Action |
+|---|---|---|
+| `VELOCITY` | More than 5 outgoing transfers from one wallet in 10 minutes | Hold |
+| `AMOUNT_SPIKE` | Amount over 5× the wallet's 30-day average completed transfer | Hold |
+| `NEW_PAYEE_LARGE_AMOUNT` | First completed transfer to this recipient, above ₹10,000 | Flag, allow |
+
+- **Held** → transfer saved as `HELD`, **no ledger entries, no balance change**, API returns **202**. Each fired rule gets a `risk_flags` row; the audit log records `null → HELD`.
+- Rules apply to money leaving a user wallet (peer transfers, withdrawals). Top-ups and reversals skip them; the new-payee rule applies only to peer transfers. Held transfers still count toward velocity.
+- **Admin decisions** (`POST /admin/risk/{id}/decision`): `RELEASE` locks the transfer row, then both accounts, **re-checks funds**, writes the entries and sets `COMPLETED`; `REJECT` sets `REJECTED` with no money ever moving. Both are recorded in the audit log by `ADMIN`. `GET /admin/risk/queue` lists held transfers (oldest first) and recently flagged ones.
+- Tests: `FraudRulesTest` (each rule, release, reject, decide only once).
+
+### Index per rule and time added to a transfer
+
+Measured with `EXPLAIN ANALYZE` on 650,000 transfers (sender with ≈250 transfers):
+
+| Rule | Index | Before (no index) | After |
+|---|---|---|---|
+| Velocity | `idx_transfers_from_created (from_account_id, created_at)` | 35 ms, parallel seq scan | 0.68 ms, index scan |
+| Amount spike | `idx_transfers_from_created (from_account_id, created_at)` | 30 ms, parallel seq scan | 2.05 ms, bitmap index scan (114 rows) |
+| New payee | `idx_transfers_from_to (from_account_id, to_account_id)` | 24 ms, parallel seq scan | 2.12 ms, index scan |
+| **Added per transfer** | | **≈ 90 ms** | **≈ 5 ms** |
+
+Without indexes, each rule read the whole `transfers` table, so the cost grew with total volume and was paid **while the sender's row was locked**. With the indexes, cost depends only on one wallet's history. Trade-off: each new transfer updates two more indexes, which is worth it because both are read on every transfer.
