@@ -163,3 +163,19 @@ Seeded with `scripts/seed.sql -v transfers=500000` (500,000 transfers, 1,000,000
 - In Check 3, the `NOT IN (affected_accounts)` part was `never executed`: with clean data no account mismatches, so the root-cause exclusion costs nothing.
 - The planner over-estimates unbalanced transfers (estimated 489,762, actual 0) because it can't predict a `HAVING` result. That inflated cost triggers JIT compilation (165–265 ms of overhead).
 - **What I'd do next:** Checks 3 and 4 recompute the unbalanced transfers that Check 2 already found. Passing Check 2's result to them would avoid reading the ledger a second time (about 450 ms saved in Check 4). If the ledger grows to hundreds of millions of rows, checks could run incrementally (only entries since the last run, plus stored running totals).
+
+## Statement pagination
+
+`GET /wallets/{id}/statement` orders by `created_at DESC, id DESC` (`id` breaks ties so the order is stable) and uses the index `(account_id, created_at DESC, id DESC)`.
+
+Measured on a wallet with 150,457 entries (1.3 million entries in total):
+
+| Query | Plan | Rows produced | Buffers | Temp files | Time |
+|---|---|---|---|---|---|
+| `LIMIT 20 OFFSET 0` | Index Scan + nested loop | 20 | 106 | No | 0.49 ms |
+| `LIMIT 20 OFFSET 100000` | Bitmap scan of all 150k entries + hash join + external merge sort | 100,020 (100,000 discarded) | 12,323 | ≈13 MB | 155 ms |
+| Cursor: `(created_at, id) < (…)` `LIMIT 20` | Index Scan with row comparison + nested loop | 20 | 103 | No | 0.2 ms |
+
+**Why OFFSET gets slow:** the database cannot jump to row 100,001; it must produce, join and sort every earlier row and then throw them away, so cost grows with the page number. At this depth the planner abandons the index entirely and sorts all 150,000 rows, spilling to disk. OFFSET also shows duplicates or skips rows if transfers arrive while the user is paging.
+
+**Cursor pagination:** the client passes the `(created_at, id)` of the last row it saw. The row comparison matches the index order exactly, so PostgreSQL seeks straight to that position and reads only 20 rows. Cost is constant at any depth, and new rows don't shift pages.
