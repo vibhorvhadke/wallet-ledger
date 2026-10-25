@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 
 import java.util.UUID;
 
@@ -19,12 +21,14 @@ public class TransferController {
     private final TransferService transferService;
     private final AccountService accountService;
     private final IdempotencyService idempotencyService;
+    private final TransferQueryService transferQueryService;
 
     public TransferController(TransferService transferService, AccountService accountService,
-                              IdempotencyService idempotencyService) {
+                              IdempotencyService idempotencyService, TransferQueryService transferQueryService) {
         this.transferService = transferService;
         this.accountService = accountService;
         this.idempotencyService = idempotencyService;
+        this.transferQueryService = transferQueryService;
     }
 
     @PostMapping("/transfers/topup")
@@ -62,5 +66,10 @@ public class TransferController {
 
     private static ActionResult created(TransferResponse transfer) {
         return new ActionResult(HttpStatus.CREATED, transfer, transfer.id());
+    }
+
+    @GetMapping("/transfers/{transferId}")
+    public TransferDetailsResponse getTransfer(@PathVariable long transferId) {
+        return transferQueryService.getTransfer(transferId);
     }
 }
