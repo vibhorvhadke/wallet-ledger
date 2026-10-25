@@ -1,3 +1,12 @@
+# Settings shared by the API and the worker
+x-app-env: &app-env
+  DB_URL: jdbc:postgresql://postgres:5432/wallet
+  DB_USERNAME: wallet
+  DB_PASSWORD: wallet
+  LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-20b}
+
 services:
   postgres:
     image: postgres:16
@@ -15,6 +24,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  api:
+    build: .
+    image: wallet-ledger:local
+    container_name: wallet-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      WORKER_ENABLED: "false"
+    ports:
+      - "8080:8080"
+
+  worker:
+    build: .
+    image: wallet-ledger:local
+    container_name: wallet-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      WORKER_ENABLED: "true"
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none   # no HTTP server in the worker
+      RECONCILIATION_CRON: ${RECONCILIATION_CRON:-0 0 2 * * *}
 
 volumes:
   wallet-pgdata:
