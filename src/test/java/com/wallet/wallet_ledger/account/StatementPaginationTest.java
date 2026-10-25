@@ -15,6 +15,9 @@ import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 class StatementPaginationTest {
@@ -37,16 +40,20 @@ class StatementPaginationTest {
         // A wallet with 45 entries: 1 top-up + 44 outgoing transfers
         long userId = jdbc.queryForObject(
                 "INSERT INTO users (name, email, phone, kyc_status) VALUES ('Page User', 'page@test.com', '5000000001', 'VERIFIED') RETURNING id",
-                Long.class);
+                Long.class
+        );
         long otherUserId = jdbc.queryForObject(
                 "INSERT INTO users (name, email, phone, kyc_status) VALUES ('Page Other', 'page-other@test.com', '5000000002', 'VERIFIED') RETURNING id",
-                Long.class);
+                Long.class
+        );
         long wallet = jdbc.queryForObject(
                 "INSERT INTO accounts (user_id, account_type, name) VALUES (?, 'USER_WALLET', 'Main') RETURNING id",
-                Long.class, userId);
+                Long.class, userId
+        );
         long other = jdbc.queryForObject(
                 "INSERT INTO accounts (user_id, account_type, name) VALUES (?, 'USER_WALLET', 'Main') RETURNING id",
-                Long.class, otherUserId);
+                Long.class, otherUserId
+        );
         long cashIn = jdbc.queryForObject("SELECT id FROM accounts WHERE name = 'CASH_IN'", Long.class);
 
         transferService.transfer(TransferType.TOPUP, cashIn, wallet, 100000, null);
@@ -75,5 +82,16 @@ class StatementPaginationTest {
         assertThat(pageSizes).containsExactly(20, 20, 5);   // last page has no next_cursor
         assertThat(viaCursor).hasSize(45).doesNotHaveDuplicates();
         assertThat(viaCursor).isEqualTo(viaOffset);         // same rows, same order
+    }
+
+    @BeforeEach
+    void disableRiskRules() {
+        // This test sends many transfers from one wallet on purpose; fraud rules are tested in FraudRulesTest
+        jdbc.update("UPDATE risk_rules SET is_active = false");
+    }
+
+    @AfterEach
+    void enableRiskRules() {
+        jdbc.update("UPDATE risk_rules SET is_active = true");
     }
 }

@@ -64,8 +64,10 @@ public class TransferController {
         ).toResponseEntity();
     }
 
+    /** 201 when money moved, 202 when the transfer is held for review. */
     private static ActionResult created(TransferResponse transfer) {
-        return new ActionResult(HttpStatus.CREATED, transfer, transfer.id());
+        HttpStatus status = "HELD".equals(transfer.status()) ? HttpStatus.ACCEPTED : HttpStatus.CREATED;
+        return new ActionResult(status, transfer, transfer.id());
     }
 
     @GetMapping("/transfers/{transferId}")

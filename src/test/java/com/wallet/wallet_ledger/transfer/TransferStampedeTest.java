@@ -17,6 +17,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 class TransferStampedeTest {
@@ -107,5 +110,14 @@ class TransferStampedeTest {
                 FROM ledger_entries WHERE account_id = ?
                 """, Long.class, accountId);
     }
+    @BeforeEach
+    void disableRiskRules() {
+        // This test sends many transfers from one wallet on purpose; fraud rules are tested in FraudRulesTest
+        jdbc.update("UPDATE risk_rules SET is_active = false");
+    }
 
+    @AfterEach
+    void enableRiskRules() {
+        jdbc.update("UPDATE risk_rules SET is_active = true");
+    }
 }
