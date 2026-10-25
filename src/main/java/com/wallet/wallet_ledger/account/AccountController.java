@@ -48,7 +48,8 @@ public class AccountController {
     @GetMapping("/wallets/{walletId}/statement")
     public StatementResponse getStatement(@PathVariable long walletId,
                                           @RequestParam(defaultValue = "20") int limit,
-                                          @RequestParam(defaultValue = "0") int offset) {
-        return accountService.getStatement(walletId, limit, offset);
+                                          @RequestParam(defaultValue = "0") int offset,
+                                          @RequestParam(required = false) String cursor) {
+        return accountService.getStatement(walletId, limit, offset, cursor);
     }
 }
