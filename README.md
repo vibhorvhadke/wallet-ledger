@@ -211,3 +211,22 @@ Measured with `EXPLAIN ANALYZE` on 650,000 transfers (sender with ≈250 transfe
 | **Added per transfer** | | **≈ 90 ms** | **≈ 5 ms** |
 
 Without indexes, each rule read the whole `transfers` table, so the cost grew with total volume and was paid **while the sender's row was locked**. With the indexes, cost depends only on one wallet's history. Trade-off: each new transfer updates two more indexes, which is worth it because both are read on every transfer.
+
+### Part B: LLM explanations of flags
+
+A step in the nightly job (`ReconciliationScheduler`, after reconciliation) calls `RiskExplanationService.explainPendingFlags()`; `POST /admin/risk/explain` runs it on demand.
+
+For each flag with `explained_at IS NULL`, the LLM receives JSON with the rule (code, description, action), the flagged transfer, and the sending wallet's last 10 outgoing transfers (via `idx_transfers_from_created`). It must reply with only `{"explanation": "<two sentences>", "label": "likely_ok" | "review" | "likely_fraud"}`, saved to `risk_flags.llm_explanation`, `llm_label`, `explained_at`.
+
+**Safety:**
+- **The rules decide; the LLM only explains.** Its label is advisory for the reviewer and never changes a transfer's status.
+- **Output is validated in code:** JSON object, non-empty explanation, label from the allowed set. Anything else is ignored, the flag stays unexplained, and the next run retries it.
+- **No user-written text is sent:** transfer notes are excluded, and the prompt tells the model to treat every value as data.
+- **No LLM call inside a transaction** (`Propagation.NOT_SUPPORTED`): each flag is saved with its own `UPDATE`, so a slow or failing LLM never holds locks.
+- **Catch-up:** any flag missed on a previous night (e.g. provider down) is picked up by the next run.
+
+**Providers** (behind the one-method `LlmClient` interface, chosen by `LLM_PROVIDER`):
+- `mock` (default): fixed JSON, no network or API key. Used by all tests.
+- `openai-compatible`: any OpenAI-compatible chat API (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`). Tested with Groq's free tier and `openai/gpt-oss-20b`, using JSON mode and temperature 0.
+
+Tests: `RiskExplanationTest` (a held transfer gets a label and explanation from the mock; a second run doesn't touch it; invalid replies are rejected).
