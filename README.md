@@ -1,5 +1,7 @@
 # Payments-Grade Wallet Ledger
 
+![CI](https://github.com/vibhorvhadke/wallet-ledger/actions/workflows/ci.yml/badge.svg)
+
 ## Milestone 1 — Design questions
 
 ### 1. Do we store each account's balance, compute it from ledger entries, or both?
